@@ -14,6 +14,9 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     // Vendored minified opus-recorder encoder worker (served statically).
     "public/opus/**",
+    // Passenger (cPanel Node.js Selector) entry point — CommonJS by
+    // contract (Passenger requires() it directly), not app source.
+    "app.js",
   ]),
 ]);
 
