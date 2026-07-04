@@ -36,7 +36,8 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "fix-next-permissions": "node scripts/fix-next-permissions.js"
   },
   "dependencies": {
     "@base-ui/react": "^1.6.0",

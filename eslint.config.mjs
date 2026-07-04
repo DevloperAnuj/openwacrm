@@ -17,6 +17,8 @@ const eslintConfig = defineConfig([
     // Passenger (cPanel Node.js Selector) entry point — CommonJS by
     // contract (Passenger requires() it directly), not app source.
     "app.js",
+    // One-off deploy maintenance script, not app source.
+    "scripts/fix-next-permissions.js",
   ]),
 ]);
 
