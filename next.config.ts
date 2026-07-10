@@ -62,6 +62,17 @@ const SECURITY_HEADERS = [
 
 const nextConfig: NextConfig = {
   /**
+   * Emit `.next/standalone` — a self-contained server bundle with only
+   * the traced subset of node_modules — so the Docker image can drop the
+   * ~1 GB dependency tree and ship as a slim runtime layer.
+   *
+   * Additive: `next build` still writes the full `.next/` output, so
+   * `next start` and the Passenger entry point (`app.js`) on the cPanel
+   * deploy keep working unchanged.
+   */
+  output: "standalone",
+
+  /**
    * Cache-Control policy.
    *
    * Why this exists:

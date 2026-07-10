@@ -1,0 +1,45 @@
+# Build context exclusions. Everything here either bloats the image,
+# breaks the build, or leaks secrets into a layer.
+
+# Secrets. `.env.local` holds live Supabase service-role and Meta
+# credentials — COPY . . would bake them into an image layer where they
+# survive even if a later layer deletes them.
+.env
+.env.*
+!.env.local.example
+!.env.example
+
+# Host artifacts. A `.next/` built on the host has the wrong platform
+# binaries and stale chunk hashes; the builder stage regenerates it.
+# node_modules likewise — npm ci installs Linux-native SWC/Turbopack.
+node_modules
+.next
+out
+build
+coverage
+*.tsbuildinfo
+
+# VCS + CI
+.git
+.github
+.gitignore
+
+# Not used by the container. `app.js` is the Passenger entry point for
+# the cPanel deploy; Docker runs `.next/standalone/server.js` instead.
+app.js
+scripts/fix-next-permissions.js
+
+# Docs + editor config
+docs
+*.md
+.editorconfig
+.prettierrc
+.prettierignore
+.vscode
+.idea
+
+# Local tooling
+supabase/.branches
+supabase/.temp
+Dockerfile
+.dockerignore
