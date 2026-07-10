@@ -19,6 +19,8 @@
 
 # production
 /build
+# assembled by .github/workflows/deploy-cpanel.yml before the FTP sync
+/deploy
 
 # misc
 .DS_Store

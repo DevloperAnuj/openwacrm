@@ -1,0 +1,143 @@
+name: Deploy (cPanel / FTP)
+
+on:
+  push:
+    branches: [cpanel]
+  # Manual re-deploy without an empty commit — useful after changing an
+  # env var in cPanel, since NEXT_PUBLIC_* only take effect on rebuild.
+  workflow_dispatch:
+
+# Serialise deploys. `cancel-in-progress: true` (what ci.yml uses) is
+# actively harmful here: killing the job mid-FTP leaves the app root
+# half-synced — new server chunks referencing static assets that haven't
+# uploaded yet — and Passenger will happily serve that. Queue instead.
+concurrency:
+  group: deploy-cpanel
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build and ship to cPanel
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          # Must match the Node version selected in cPanel's Node.js
+          # Selector. The standalone bundle ships prebuilt native deps
+          # traced against this version; a major-version mismatch on the
+          # server surfaces as a NODE_MODULE_VERSION error at boot.
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        env:
+          # NEXT_PUBLIC_* are inlined into the client bundle by
+          # `next build` and are NOT read from the server environment at
+          # runtime. Setting them in cPanel's Node.js Selector does
+          # nothing — they have to be present *here*, or the browser
+          # Supabase client is constructed with `undefined` and every
+          # dashboard request fails with an opaque fetch error.
+          #
+          # They're stored as GitHub secrets for convenience, not
+          # because they're sensitive: all three are shipped to every
+          # visitor inside the JS bundle. The anon key is safe to expose;
+          # RLS is what protects the data.
+          NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+          NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+          NEXT_PUBLIC_SITE_URL: ${{ secrets.NEXT_PUBLIC_SITE_URL }}
+          # Next derives a fresh Server Action encryption key per build.
+          # Pinning it keeps action IDs stable across deploys, so a user
+          # who had the dashboard open when you shipped doesn't hit
+          # "Failed to find Server Action" on their next click. Optional;
+          # an unset secret is an empty string, which Next ignores.
+          NEXT_SERVER_ACTIONS_ENCRYPTION_KEY: ${{ secrets.NEXT_SERVER_ACTIONS_ENCRYPTION_KEY }}
+          NEXT_TELEMETRY_DISABLED: '1'
+        run: npm run build
+
+      - name: Assemble deploy directory
+        env:
+          GIT_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # `output: 'standalone'` emits a self-contained app: server.js,
+          # the traced subset of node_modules, and .next/ server chunks.
+          # ~31 MB against the ~668 MB full dependency tree, which is the
+          # difference between an FTP sync that finishes and one that
+          # doesn't.
+          cp -r .next/standalone deploy
+
+          # Standalone deliberately omits these two — upstream Next
+          # assumes a CDN fronts them. Without the copy you get HTML 200s
+          # with every asset 404ing, and the app renders unstyled.
+          # public/opus/ carries the opus-recorder worker the inbox voice
+          # note composer fetches at runtime.
+          mkdir -p deploy/.next
+          cp -r .next/static deploy/.next/static
+          cp -r public deploy/public
+
+          # Passenger reloads the app when the mtime of tmp/restart.txt
+          # changes. The FTP action syncs on content hash, not mtime, so
+          # an empty marker would upload once and never again. Writing
+          # the commit SHA guarantees the content differs every deploy,
+          # which forces the upload, which bumps the mtime, which
+          # restarts the app. Without this, FTP swaps the code under a
+          # running process that keeps serving the previous build.
+          mkdir -p deploy/tmp
+          echo "$GIT_SHA" > deploy/tmp/restart.txt
+
+          # The standalone package.json is a verbatim copy of the root
+          # one, devDependencies and all. Nothing on the server reads it
+          # (server.js resolves from the bundled node_modules), but if
+          # anyone clicks "Run NPM Install" in cPanel it would drag in
+          # the full toolchain and overwrite the traced tree. Strip it
+          # down so that misclick is harmless.
+          node -e '
+            const fs = require("fs");
+            const p = JSON.parse(fs.readFileSync("deploy/package.json", "utf8"));
+            delete p.devDependencies;
+            p.scripts = { start: "node server.js" };
+            fs.writeFileSync("deploy/package.json", JSON.stringify(p, null, 2));
+          '
+
+      - name: Deploy over FTPS
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          # Explicit FTPS (AUTH TLS on port 21). Plain `ftp` sends the
+          # password in cleartext; cPanel supports FTPS out of the box.
+          protocol: ftps
+          port: 21
+
+          # Trailing slashes are load-bearing — the action treats a path
+          # without one as a file and silently uploads nothing useful.
+          local-dir: ./deploy/
+          server-dir: ${{ secrets.FTP_SERVER_DIR }}
+
+          # The action keeps a manifest on the server and uploads only
+          # changed files. First run pushes everything (thousands of
+          # small node_modules files — expect 10-20 min); later runs
+          # typically touch only .next/ and tmp/restart.txt.
+          state-name: .ftp-deploy-state.json
+
+          # Never mirror-delete. cPanel owns files in the app root that
+          # this repo knows nothing about (.htaccess, the nodevenv
+          # symlink, Passenger's own scratch files); a clean slate would
+          # take them with it.
+          dangerous-clean-slate: false
+
+          exclude: |
+            **/.git*
+            **/.git*/**
+            **/node_modules/.cache/**
+            .htaccess
+            .env
+            .env.*
