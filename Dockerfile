@@ -12,9 +12,17 @@
 #     -t wacrm .
 
 # ---------------------------------------------------------------------
-# deps — resolve node_modules once so edits to src/ don't reinstall.
+# builder — install and compile.
+#
+# Deliberately one stage, not the conventional deps/builder split. That
+# split exists to cache installs, but `COPY package.json package-lock.json`
+# ahead of `COPY . .` already earns the same cache hit: edits to src/ do
+# not invalidate the `npm ci` layer. What the split adds is a
+# `COPY --from=deps /app/node_modules` of ~670 MB across a stage
+# boundary, which BuildKit materialises as a second full copy on disk.
+# On a small Coolify host that is where the build dies.
 # ---------------------------------------------------------------------
-FROM node:24-alpine AS deps
+FROM node:24-alpine AS builder
 
 # Next 16 builds with Turbopack, whose native binaries are glibc-linked.
 # Alpine ships musl, so without the compat shim `next build` aborts with
@@ -29,14 +37,6 @@ COPY package.json package-lock.json ./
 # TypeScript compiler and ESLint.
 RUN npm ci
 
-# ---------------------------------------------------------------------
-# builder — compile the app.
-# ---------------------------------------------------------------------
-FROM node:24-alpine AS builder
-RUN apk add --no-cache libc6-compat
-WORKDIR /app
-
-COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 
 # NEXT_PUBLIC_* are inlined into the client JS bundle by `next build`.
@@ -47,6 +47,13 @@ COPY . .
 #
 # In Coolify: set these under Environment Variables and tick "Build
 # Variable" on each, which is what forwards them as --build-arg.
+#
+# Tick it on these three ONLY. Coolify injects every build-marked var as
+# an `ARG NAME=<literal value>` prepended to each stage, so anything
+# ticked here is written into the image's build history in plaintext and
+# is readable by anyone who can pull the image. ENCRYPTION_KEY,
+# SUPABASE_SERVICE_ROLE_KEY, META_APP_SECRET and AUTOMATION_CRON_SECRET
+# are read at request time, never at build time — leave them unticked.
 ARG NEXT_PUBLIC_SUPABASE_URL
 ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
 ARG NEXT_PUBLIC_SITE_URL
